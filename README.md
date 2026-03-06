@@ -1,297 +1,272 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>AML Build Roadmap</title>
+"""
+config/job_types.py
+════════════════════
+Defines the 10 screening jobs your department runs:
 
-<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  SAN_IND / SAN_ENT     — Sanctions (government + commercial lists)
+  SCION_IND / SCION_ENT — Private / proprietary lists (single merged list)
+  PEP_IND / PEP_ENT     — Politically Exposed Persons
+  NNS_IND / NNS_ENT     — Negative News Screening (articles + structured)
+  CTRY_IND / CTRY_ENT   — Country Risk (lookup, not name-match)
 
-<style>
+Each job has:
+  • Its own ordered list of datasets to screen against
+  • Its own alert threshold  (10 unique values)
+  • Its own entity_type      (INDIVIDUAL or ENTITY)
+  • Per-dataset flags        (auto_alert_on_exact_id, threshold_override)
+"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Literal
 
-body{
-background:#08080c;
-color:#e2e8f0;
-font-family:'Nunito',sans-serif;
-margin:0;
-}
-
-.header{
-padding:16px 22px 12px;
-border-bottom:1px solid #1a1a24;
-}
-
-.title{
-font-family:'Bebas Neue';
-font-size:26px;
-letter-spacing:0.05em;
-}
-
-.subtitle{
-font-size:12px;
-color:#52525e;
-}
-
-.container{
-display:flex;
-height:calc(100vh - 70px);
-}
-
-.sidebar{
-width:220px;
-border-right:1px solid #1a1a24;
-overflow:auto;
-}
-
-.phase{
-padding:12px;
-border-bottom:1px solid #0d0d14;
-cursor:pointer;
-}
-
-.phase:hover{
-background:#12121a;
-}
-
-.phase.active{
-background:#1f1f2b;
-}
-
-.main{
-flex:1;
-padding:24px;
-overflow:auto;
-}
-
-.phaseTitle{
-font-size:28px;
-font-family:'Bebas Neue';
-}
-
-.modules span{
-display:inline-block;
-background:#12121a;
-padding:4px 8px;
-margin:4px;
-border-radius:4px;
-font-family:'JetBrains Mono';
-font-size:11px;
-}
-
-.tabs button{
-margin-right:6px;
-padding:6px 14px;
-cursor:pointer;
-background:#12121a;
-border:1px solid #1f1f28;
-border-radius:4px;
-color:#aaa;
-}
-
-.tabs button.active{
-color:#f97316;
-border-color:#f97316;
-}
-
-.box{
-margin-top:14px;
-background:#12121a;
-padding:16px;
-border-radius:8px;
-border:1px solid #1f1f28;
-}
-
-ul{
-line-height:1.8;
-}
-
-</style>
-</head>
-
-<body>
-
-<div class="header">
-<div style="font-family:'JetBrains Mono';font-size:10px;color:#3f3f52">
-AML ENTERPRISE — BUILD ORDER
-</div>
-
-<div class="title">WHAT TO BUILD FIRST</div>
-
-<div class="subtitle">
-10 phases · click any phase to see what it does
-</div>
-</div>
-
-
-<div class="container">
-
-<div class="sidebar" id="sidebar"></div>
-
-<div class="main">
-
-<div class="phaseTitle" id="title"></div>
-
-<div id="subtitle" style="color:#777;margin-bottom:10px"></div>
-
-<div class="modules" id="modules"></div>
-
-<div class="tabs">
-<button onclick="setTab('detail')" id="tab_detail">Why</button>
-<button onclick="setTab('test')" id="tab_test">Tests</button>
-<button onclick="setTab('pitfalls')" id="tab_pitfalls">Pitfalls</button>
-</div>
-
-<div class="box" id="content"></div>
-
-</div>
-
-</div>
-
-
-<script>
-
-let activePhase=0
-let tab="detail"
-
-const PHASES=[
-
-{
-title:"Data Layer",
-subtitle:"Build raw data first",
-modules:[
-"utils/alias_engine.py",
-"utils/transliteration_engine.py",
-"generators/san_individual.py"
-],
-why:"Everything depends on data existing. Matching engine needs records.",
-tests:[
-"registry.load_all() runs",
-"registry.summary() prints counts",
-"datasets return DataFrame"
-],
-pitfalls:[
-"Build utils before generators",
-"aliases must exist for every record"
-]
-},
-
-{
-title:"ETL Layer",
-subtitle:"Clean names before comparison",
-modules:[
-"etl_layer/normalization.py"
-],
-why:"Without cleaning, Mohammed vs MOHAMMED will not match.",
-tests:[
-"normalize_name('Möhammed') → MOHAMMED",
-"normalize_aliases works"
-],
-pitfalls:[
-"normalize both input and candidates"
-]
-},
-
-{
-title:"Blocking Engine",
-subtitle:"Reduce candidates from 17000 to ~200",
-modules:[
-"blocking_engine/inverted_index.py",
-"blocking_engine/blocking.py"
-],
-why:"Fuzzy matching against 17000 rows is too slow.",
-tests:[
-"inverted index builds",
-"query returns <500 candidates"
-],
-pitfalls:[
-"index must rebuild if data changes"
-]
-}
-
+# ── Types ──────────────────────────────────────────────────────────────────
+DatasetCode = Literal[
+    # SAN — government lists
+    "OFAC_SDN", "UN_CONSOLIDATED", "EU_SANCTIONS",
+    "HM_TREASURY", "INTERPOL_RED",
+    # SAN — commercial lists
+    "WORLD_CHECK", "DOW_JONES", "COMPLY_ADVANTAGE", "ACCUITY_FIRCO",
+    # SCION — single merged private list
+    "SCION",
+    # PEP
+    "PEP_DATABASE",
+    # NNS
+    "NNS_ARTICLES", "NNS_STRUCTURED",
+    # CTRY
+    "COUNTRY_RISK",
 ]
 
-function renderSidebar(){
+EntityType = Literal["INDIVIDUAL", "ENTITY"]
 
-const sb=document.getElementById("sidebar")
-sb.innerHTML=""
+JobCode = Literal[
+    "SAN_IND", "SAN_ENT",
+    "SCION_IND", "SCION_ENT",
+    "PEP_IND", "PEP_ENT",
+    "NNS_IND", "NNS_ENT",
+    "CTRY_IND", "CTRY_ENT",
+]
 
-PHASES.forEach((p,i)=>{
 
-const d=document.createElement("div")
-d.className="phase"+(i===activePhase?" active":"")
+@dataclass
+class DatasetConfig:
+    code:                   DatasetCode
+    entity_types:           list[EntityType]
+    priority:               int           = 99
+    auto_alert_on_exact_id: bool          = False
+    threshold_override:     float | None  = None
+    description:            str           = ""
 
-d.innerHTML=
-"<b>"+(i+1)+". "+p.title+"</b><br><span style='font-size:12px;color:#777'>"+p.subtitle+"</span>"
 
-d.onclick=()=>{
-activePhase=i
-render()
+@dataclass
+class JobConfig:
+    job_code:    JobCode
+    entity_type: EntityType
+    description: str
+    threshold:   float            # alert threshold specific to this job
+    datasets:    list[DatasetConfig]
+    is_country_lookup: bool = False   # True for CTRY jobs — no name scoring
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SAN — SANCTIONS
+# Strictest thresholds: false negatives are a regulatory breach.
+# IND: all gov lists + all commercial. ENT: same minus INTERPOL (individual-only).
+# Exact passport / registration number → always auto-ALERT.
+# ══════════════════════════════════════════════════════════════════════════
+SAN_IND = JobConfig(
+    job_code="SAN_IND", entity_type="INDIVIDUAL",
+    description="Sanctions screening — individual",
+    threshold=0.65,
+    datasets=[
+        DatasetConfig("OFAC_SDN",         ["INDIVIDUAL"], priority=1, auto_alert_on_exact_id=True,
+                      description="OFAC Specially Designated Nationals"),
+        DatasetConfig("UN_CONSOLIDATED",  ["INDIVIDUAL"], priority=2, auto_alert_on_exact_id=True,
+                      description="UN Security Council Consolidated List"),
+        DatasetConfig("EU_SANCTIONS",     ["INDIVIDUAL"], priority=3, auto_alert_on_exact_id=True,
+                      description="EU Financial Sanctions"),
+        DatasetConfig("HM_TREASURY",      ["INDIVIDUAL"], priority=4, auto_alert_on_exact_id=True,
+                      description="UK OFSI / HM Treasury"),
+        DatasetConfig("INTERPOL_RED",     ["INDIVIDUAL"], priority=5,
+                      description="INTERPOL Red Notices"),
+        DatasetConfig("WORLD_CHECK",      ["INDIVIDUAL"], priority=6,
+                      description="Refinitiv World-Check"),
+        DatasetConfig("DOW_JONES",        ["INDIVIDUAL"], priority=7,
+                      description="Dow Jones Risk & Compliance"),
+        DatasetConfig("COMPLY_ADVANTAGE", ["INDIVIDUAL"], priority=8,
+                      description="ComplyAdvantage"),
+        DatasetConfig("ACCUITY_FIRCO",    ["INDIVIDUAL"], priority=9,
+                      description="Accuity / Firco Compliance Link"),
+    ],
+)
+
+SAN_ENT = JobConfig(
+    job_code="SAN_ENT", entity_type="ENTITY",
+    description="Sanctions screening — entity",
+    threshold=0.68,
+    datasets=[
+        DatasetConfig("OFAC_SDN",         ["ENTITY"], priority=1, auto_alert_on_exact_id=True),
+        DatasetConfig("UN_CONSOLIDATED",  ["ENTITY"], priority=2, auto_alert_on_exact_id=True),
+        DatasetConfig("EU_SANCTIONS",     ["ENTITY"], priority=3, auto_alert_on_exact_id=True),
+        DatasetConfig("HM_TREASURY",      ["ENTITY"], priority=4, auto_alert_on_exact_id=True),
+        # INTERPOL_RED excluded — individual-only list
+        DatasetConfig("WORLD_CHECK",      ["ENTITY"], priority=5),
+        DatasetConfig("DOW_JONES",        ["ENTITY"], priority=6),
+        DatasetConfig("COMPLY_ADVANTAGE", ["ENTITY"], priority=7),
+        DatasetConfig("ACCUITY_FIRCO",    ["ENTITY"], priority=8),
+    ],
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SCION — PRIVATE / PROPRIETARY LISTS
+# Single merged list. Sources tagged via scion_source column.
+# Sources: bank blacklist, correspondent lists, regulatory lists,
+#          fraud confirmed, commercial watchlists (World-Check private feed).
+# Account / reference number exact match → auto-ALERT.
+# ══════════════════════════════════════════════════════════════════════════
+SCION_IND = JobConfig(
+    job_code="SCION_IND", entity_type="INDIVIDUAL",
+    description="SCION private list screening — individual",
+    threshold=0.70,
+    datasets=[
+        DatasetConfig("SCION", ["INDIVIDUAL"], priority=1, auto_alert_on_exact_id=True,
+                      description="Merged private list (bank BL + correspondent + regulatory + fraud + commercial)"),
+    ],
+)
+
+SCION_ENT = JobConfig(
+    job_code="SCION_ENT", entity_type="ENTITY",
+    description="SCION private list screening — entity",
+    threshold=0.72,
+    datasets=[
+        DatasetConfig("SCION", ["ENTITY"], priority=1, auto_alert_on_exact_id=True,
+                      description="Merged private list — entity"),
+    ],
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PEP — POLITICALLY EXPOSED PERSONS
+# Strictest threshold (false negatives → regulatory breach + reputational risk).
+# IND: direct PEP individuals (Tier 1/2/3).
+# ENT: entities directly on PEP list (state-owned enterprises)
+#      PLUS entities whose beneficial_owner_id links to a PEP individual.
+# ══════════════════════════════════════════════════════════════════════════
+PEP_IND = JobConfig(
+    job_code="PEP_IND", entity_type="INDIVIDUAL",
+    description="PEP screening — individual (Tier 1/2/3)",
+    threshold=0.60,
+    datasets=[
+        DatasetConfig("PEP_DATABASE", ["INDIVIDUAL"], priority=1,
+                      description="PEP database — individuals (Tier 1=Head of State, Tier 2=Senior Official, Tier 3=Associate)"),
+    ],
+)
+
+PEP_ENT = JobConfig(
+    job_code="PEP_ENT", entity_type="ENTITY",
+    description="PEP screening — entity (direct + beneficial ownership)",
+    threshold=0.65,
+    datasets=[
+        DatasetConfig("PEP_DATABASE", ["ENTITY"], priority=1,
+                      description="PEP database — entities directly listed (state-owned enterprises, party funds)"),
+        # Second pass uses beneficial_owner_id linkage — handled in PEPEntityRule
+    ],
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# NNS — NEGATIVE NEWS SCREENING
+# Two sub-datasets screened together:
+#   NNS_ARTICLES   — unstructured: headline, source, pub_date, sentiment, url
+#                    Score = name_score × recency_weight × category_severity
+#   NNS_STRUCTURED — structured: case_id, category, source, date, country,
+#                    linked_entities, sentiment_score
+#                    case_id exact match → flag (not auto-ALERT — needs review)
+# ══════════════════════════════════════════════════════════════════════════
+NNS_IND = JobConfig(
+    job_code="NNS_IND", entity_type="INDIVIDUAL",
+    description="Negative news screening — individual",
+    threshold=0.75,
+    datasets=[
+        DatasetConfig("NNS_STRUCTURED", ["INDIVIDUAL"], priority=1,
+                      description="Structured NNS database with case IDs"),
+        DatasetConfig("NNS_ARTICLES",   ["INDIVIDUAL"], priority=2,
+                      description="Unstructured news articles with recency decay"),
+    ],
+)
+
+NNS_ENT = JobConfig(
+    job_code="NNS_ENT", entity_type="ENTITY",
+    description="Negative news screening — entity",
+    threshold=0.78,
+    datasets=[
+        DatasetConfig("NNS_STRUCTURED", ["ENTITY"], priority=1),
+        DatasetConfig("NNS_ARTICLES",   ["ENTITY"], priority=2),
+    ],
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# CTRY — COUNTRY RISK (pure lookup — no name fuzzy scoring)
+# Checks multiple country fields against the COUNTRY_RISK register.
+# IND checks: nationality, country_of_birth, passport_country, country_of_residence
+# ENT checks: incorporation_country, operating_country, branch_country
+# Result: ALERT / REVIEW / NO_ALERT based on country risk tier only.
+# threshold = minimum country risk score to trigger ALERT (0–1 scale).
+# ══════════════════════════════════════════════════════════════════════════
+CTRY_IND = JobConfig(
+    job_code="CTRY_IND", entity_type="INDIVIDUAL",
+    description="Country risk screening — individual",
+    threshold=0.75,          # country_risk_score >= 0.75 → ALERT
+    is_country_lookup=True,
+    datasets=[
+        DatasetConfig("COUNTRY_RISK", ["INDIVIDUAL"], priority=1,
+                      description="Country risk register — individual country fields"),
+    ],
+)
+
+CTRY_ENT = JobConfig(
+    job_code="CTRY_ENT", entity_type="ENTITY",
+    description="Country risk screening — entity",
+    threshold=0.75,
+    is_country_lookup=True,
+    datasets=[
+        DatasetConfig("COUNTRY_RISK", ["ENTITY"], priority=1,
+                      description="Country risk register — entity country fields"),
+    ],
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# REGISTRY — all 10 jobs in one dict
+# ══════════════════════════════════════════════════════════════════════════
+JOB_REGISTRY: dict[JobCode, JobConfig] = {
+    "SAN_IND":   SAN_IND,   "SAN_ENT":   SAN_ENT,
+    "SCION_IND": SCION_IND, "SCION_ENT": SCION_ENT,
+    "PEP_IND":   PEP_IND,   "PEP_ENT":   PEP_ENT,
+    "NNS_IND":   NNS_IND,   "NNS_ENT":   NNS_ENT,
+    "CTRY_IND":  CTRY_IND,  "CTRY_ENT":  CTRY_ENT,
 }
 
-sb.appendChild(d)
-
-})
-
+# Threshold summary for quick reference
+THRESHOLD_TABLE: dict[str, dict[str, float]] = {
+    "SAN":   {"IND": 0.65, "ENT": 0.68},
+    "SCION": {"IND": 0.70, "ENT": 0.72},
+    "PEP":   {"IND": 0.60, "ENT": 0.65},
+    "NNS":   {"IND": 0.75, "ENT": 0.78},
+    "CTRY":  {"IND": 0.75, "ENT": 0.75},   # country risk score, not name score
 }
 
-function render(){
 
-const phase=PHASES[activePhase]
+def get_job(job_code: str) -> JobConfig:
+    key = job_code.strip().upper()
+    if key not in JOB_REGISTRY:
+        raise ValueError(f"Unknown job '{key}'. Valid: {list(JOB_REGISTRY.keys())}")
+    return JOB_REGISTRY[key]  # type: ignore[index]
 
-document.getElementById("title").innerText=phase.title
-document.getElementById("subtitle").innerText=phase.subtitle
 
-const modules=document.getElementById("modules")
-modules.innerHTML=""
-phase.modules.forEach(m=>{
-modules.innerHTML+="<span>"+m+"</span>"
-})
-
-renderTab()
-
-renderSidebar()
-
-}
-
-function setTab(t){
-tab=t
-renderTab()
-}
-
-function renderTab(){
-
-const phase=PHASES[activePhase]
-
-let html=""
-
-if(tab==="detail"){
-
-html="<p>"+phase.why+"</p>"
-
-}
-
-if(tab==="test"){
-
-html="<ul>"
-phase.tests.forEach(t=>html+="<li>"+t+"</li>")
-html+="</ul>"
-
-}
-
-if(tab==="pitfalls"){
-
-html="<ul>"
-phase.pitfalls.forEach(p=>html+="<li>"+p+"</li>")
-html+="</ul>"
-
-}
-
-document.getElementById("content").innerHTML=html
-
-}
-
-render()
-
-</script>
-
-</body>
-</html>
+def get_job_for_entity(job_type: str, entity_type: str) -> JobConfig:
+    """Convenience: get_job_for_entity('SAN', 'INDIVIDUAL') → SAN_IND"""
+    etype = entity_type.strip().upper()
+    suffix = "IND" if etype == "INDIVIDUAL" else "ENT"
+    return get_job(f"{job_type.strip().upper()}_{suffix}")
